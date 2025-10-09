@@ -4,11 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
+
 	"github.com/unknown321/fuse/fobtargettype"
 	"github.com/unknown321/fuse/message"
 	"github.com/unknown321/fuse/player"
 	"github.com/unknown321/fuse/tppmessage"
-	"log/slog"
 )
 
 func GetCmdGetFobTargetListResponse(ctx context.Context, msg *message.Message, manager *SessionManager, request *tppmessage.CmdGetFobTargetListRequest) tppmessage.CmdGetFobTargetListResponse {
@@ -67,12 +68,14 @@ func GetCmdGetFobTargetListResponse(ctx context.Context, msg *message.Message, m
 	if t.Type == fobtargettype.EMERGENCY.String() {
 		// TODO must include followers' bases too
 
+		slog.Info("looking for emergency fobs in intruder table", "playerID", msg.PlayerID)
 		ii, err := manager.IntruderRepo.GetByOwnerID(ctx, msg.PlayerID)
 		if err != nil {
 			slog.Error("get intruder", "error", err.Error(), "playerID", msg.PlayerID)
 			t.Result = tppmessage.RESULT_ERR
 			return t
 		}
+
 		// get owner player record
 		for _, v := range ii {
 			pl, err := manager.PlayerRepo.GetByID(ctx, msg.Platform, v.OwnerID)

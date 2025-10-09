@@ -4,9 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
+
 	"github.com/unknown321/fuse/message"
 	"github.com/unknown321/fuse/tppmessage"
-	"log/slog"
 )
 
 func HandleCmdGetFobTargetListRequest(ctx context.Context, msg *message.Message, manager *SessionManager) error {
@@ -17,7 +18,7 @@ func HandleCmdGetFobTargetListRequest(ctx context.Context, msg *message.Message,
 		return fmt.Errorf("cannot unmarshal: %w", err)
 	}
 
-	slog.Debug("CMD_GET_FOB_TARGET_LIST", "type", t.Type)
+	slog.Info("CMD_GET_FOB_TARGET_LIST", "type", t.Type)
 
 	data := FromJSON(ctx, t.Msgid)
 	if data != nil {
