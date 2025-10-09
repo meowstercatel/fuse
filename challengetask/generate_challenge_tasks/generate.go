@@ -4,12 +4,13 @@ import (
 	"bytes"
 	"encoding/json"
 	"encoding/xml"
-	"github.com/unknown321/fuse/challengetask"
-	"github.com/unknown321/fuse/tppmessage"
 	"os"
 	"strconv"
 	"strings"
 	"text/template"
+
+	"github.com/unknown321/fuse/challengetask"
+	"github.com/unknown321/fuse/tppmessage"
 )
 
 type entry struct {
@@ -65,7 +66,7 @@ type jsonStruct struct {
 
 var temp = `package sessionmanager
 
-import "glonk/tppmessage"
+import "github.com/unknown321/fuse/tppmessage"
 
 var ChallengeTaskRewardEntries = []TaskRewardEntry{
 {{- range . }}

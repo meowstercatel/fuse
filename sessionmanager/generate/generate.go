@@ -25,8 +25,8 @@ package sessionmanager
 import (
 	"encoding/json"
 	"fmt"
-	"glonk/message"
-	"glonk/tppmessage"
+	"github.com/unknown321/fuse/message"
+	"github.com/unknown321/fuse/tppmessage"
 	"log/slog"
 )
 
