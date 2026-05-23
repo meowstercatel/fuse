@@ -7,6 +7,10 @@ import (
 	"context"
 	"encoding/base64"
 	"fmt"
+	"io"
+	"log/slog"
+	"time"
+
 	"github.com/unknown321/fuse/abolition"
 	"github.com/unknown321/fuse/challengetask"
 	"github.com/unknown321/fuse/clusterbuildcost"
@@ -23,6 +27,7 @@ import (
 	"github.com/unknown321/fuse/fobrecord"
 	"github.com/unknown321/fuse/fobstatus"
 	"github.com/unknown321/fuse/fobweaponplacement"
+	"github.com/unknown321/fuse/gui"
 	"github.com/unknown321/fuse/informationmessage"
 	"github.com/unknown321/fuse/intruder"
 	"github.com/unknown321/fuse/localbase"
@@ -53,9 +58,6 @@ import (
 	"github.com/unknown321/fuse/tppmessage"
 	"github.com/unknown321/fuse/user"
 	"github.com/unknown321/fuse/util"
-	"io"
-	"log/slog"
-	"time"
 )
 
 var override = true
@@ -73,6 +75,8 @@ type SessionManager struct {
 	sessions    map[string]*session.Session
 	WriteLog    bool
 	ManagerOpts ManagerOpts
+
+	Appstate *gui.AppState
 
 	UserRepo                      *user.Repo
 	SessionRepo                   *session.Repo
@@ -669,6 +673,14 @@ func (m *SessionManager) Handle(ctx context.Context, message *message.Message) e
 		if err = message.ToFile(fmt.Sprintf("log/%s", m.LogDir)); err != nil {
 			slog.Warn("cannot save message to file", "error", err.Error())
 		}
+	}
+
+	message.Data = string(message.MData)
+	m.Appstate.MessageLog = append(m.Appstate.MessageLog, *message)
+	if message.IsRequest {
+		m.Appstate.MessageChannel <- 0
+	} else {
+		m.Appstate.MessageChannel <- 1
 	}
 
 	slog.Info("handling message", "type", message.MsgID, "override", override, "request", message.IsRequest)

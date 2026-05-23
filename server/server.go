@@ -2,19 +2,29 @@ package server
 
 import (
 	"context"
-	"github.com/unknown321/fuse/coder"
-	"github.com/unknown321/fuse/handlers"
-	"github.com/unknown321/fuse/sessionmanager"
 	"log/slog"
 	"net/http"
 	"os"
 	"strconv"
 	"time"
+
+	"github.com/unknown321/fuse/coder"
+	"github.com/unknown321/fuse/gui"
+	"github.com/unknown321/fuse/handlers"
+	"github.com/unknown321/fuse/sessionmanager"
 )
 
 const DsnURIDefault = "./fuse.dat"
 
 func Start(baseURL string, listenAddr string, platform string, writeLog bool, passThrough bool, dsnURI string, bonus sessionmanager.SignupBonus) {
+	appstate := gui.AppState{
+		MessageChannel: make(chan int),
+	}
+	go StartServer(baseURL, listenAddr, platform, writeLog, passThrough, dsnURI, bonus, &appstate)
+	gui.InitGui(&appstate)
+}
+
+func StartServer(baseURL string, listenAddr string, platform string, writeLog bool, passThrough bool, dsnURI string, bonus sessionmanager.SignupBonus, appstate *gui.AppState) {
 	now := time.Now().Unix()
 	if writeLog {
 		err := os.MkdirAll("./log/"+strconv.Itoa(int(now)), 0755)
@@ -26,6 +36,7 @@ func Start(baseURL string, listenAddr string, platform string, writeLog bool, pa
 	}
 
 	manager := sessionmanager.SessionManager{
+		Appstate: appstate,
 		WriteLog: writeLog,
 		LogDir:   strconv.FormatInt(now, 10),
 		ManagerOpts: sessionmanager.ManagerOpts{
@@ -85,6 +96,10 @@ func Start(baseURL string, listenAddr string, platform string, writeLog bool, pa
 		_, _ = writer.Write([]byte("coin terms\n"))
 	})
 	mux.HandleFunc("/tppstmweb/privacy/privacy.var", func(writer http.ResponseWriter, request *http.Request) {
+		writer.WriteHeader(http.StatusOK)
+		_, _ = writer.Write([]byte("privacy\n"))
+	})
+	mux.HandleFunc("/tppstmweb/gdpr/privacy.var", func(writer http.ResponseWriter, request *http.Request) {
 		writer.WriteHeader(http.StatusOK)
 		_, _ = writer.Write([]byte("privacy\n"))
 	})
