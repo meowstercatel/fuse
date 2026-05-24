@@ -24,6 +24,7 @@ type privateState struct {
 
 type Rule struct {
 	Enabled   bool
+	Block     bool
 	Name      string
 	Request   bool
 	Cmd       string
@@ -93,14 +94,56 @@ var (
 var currentRule Rule
 
 func saveRule() {
+	openRuleWindow = false
 	currentRule.Enabled = true
-	privatestate.rules = append(privatestate.rules, currentRule)
+	shouldCreate := true
+	currentRule.JsonPatch = ruleEditor.GetText()
+	ruleEditor.Text("")
+	for i, rule := range privatestate.rules {
+		if currentRule.Name == rule.Name {
+			//update
+			privatestate.rules[i] = currentRule
+			shouldCreate = false
+		}
+	}
+	if shouldCreate {
+		privatestate.rules = append(privatestate.rules, currentRule)
+	}
 	currentRule = Rule{}
+
+	rebuildRuleTable()
 }
 
 func rebuildRuleTable() {
-	lastRule := privatestate.rules[len(privatestate.rules)-1]
-	tableRow := g.TableRow()
+	// lastRule := privatestate.rules[len(privatestate.rules)-1]
+	privatestate.ruleTableWidgets = privatestate.ruleTableWidgets[0:0] //clear array
+
+	for _, rule := range privatestate.rules {
+		var ruleType string
+		if rule.Request {
+			ruleType = "req"
+		} else {
+			ruleType = "res"
+		}
+
+		privatestate.ruleTableWidgets = append(privatestate.ruleTableWidgets,
+			g.TableRow(g.Label(rule.Name), g.Label(rule.Cmd), g.Checkbox("enabled", &rule.Enabled), g.Label(ruleType), g.Button("modify").OnClick(func() {
+				openUpdateRuleWindow(rule.Name)
+			})),
+		)
+	}
+
+	giu.Update()
+}
+
+func openUpdateRuleWindow(ruleName string) {
+	for _, rule := range privatestate.rules {
+		if rule.Name == ruleName {
+			currentRule = rule
+		}
+	}
+	ruleEditor.Text(currentRule.JsonPatch)
+	openRuleWindow = true
 }
 
 func InitGui(Appstate *AppState) {
@@ -109,13 +152,7 @@ func InitGui(Appstate *AppState) {
 	go handleMessages(appstate, &privatestate)
 
 	w := g.NewMasterWindow("Overview", 1000, 800, 0)
-
-	// courierNew := g.Context.FontAtlas.AddFont("Courier New", 16)
-	for _, font := range g.Context.FontAtlas.GetDefaultFonts() {
-		fmt.Println(font.String())
-	}
 	g.Context.FontAtlas.SetDefaultFont("Calibri", 16)
-	// g.Style().SetFont(courierNew)
 
 	editor = g.CodeEditor().ShowWhitespaces(true).LanguageDefinition(g.LanguageDefinitionJSON).Border(true)
 	ruleEditor = g.CodeEditor().ShowWhitespaces(true).LanguageDefinition(g.LanguageDefinitionJSON).Border(true)
@@ -148,14 +185,9 @@ func loop() {
 							g.TableColumn("CMD"),
 							g.TableColumn("Enabled"),
 							g.TableColumn("req/res"),
+							g.TableColumn("modify"),
 						).
-						Rows(
-							g.TableRow(g.Label("Loooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooog").Wrapped(true), g.Label("Age"), g.Label("Loc")),
-							g.TableRow(g.Label("Second Loooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooog").Wrapped(true), g.Label("Age"), g.Label("Loc")),
-							g.TableRow(g.Label("Name"), g.Label("Age"), g.Label("Location")),
-							g.TableRow(g.Label("Allen"), g.Label("33"), g.Label("Shanghai/China")),
-							g.TableRow(g.Checkbox("check me", &checked), g.Button("click me"), g.Label("Anything")),
-						),
+						Rows(privatestate.ruleTableWidgets...),
 				)),
 		),
 	)
@@ -170,13 +202,14 @@ func loop() {
 						currentRule = Rule{}
 					}),
 				),
-				g.Row(g.Label("rule name: "), g.InputText(&currentRule.Name)),
+				g.Row(g.Label("rule name (unique): "), g.InputText(&currentRule.Name)),
 				g.Row(g.Label("rule trigger (cmd name): "), g.InputText(&currentRule.Cmd)),
 				g.Row(
 					g.Label("rule type: "),
 					g.RadioButton("request", currentRule.Request).OnChange(func() { currentRule.Request = !currentRule.Request }),
 					g.RadioButton("response", !currentRule.Request).OnChange(func() { currentRule.Request = !currentRule.Request }),
 				),
+				g.Checkbox("block CMD", &currentRule.Block),
 				g.Label("patch:"),
 				ruleEditor,
 			),
