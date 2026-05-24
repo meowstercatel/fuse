@@ -10,6 +10,7 @@ import (
 
 	"github.com/unknown321/fuse/coder"
 	"github.com/unknown321/fuse/gui"
+	guistructs "github.com/unknown321/fuse/gui_structs"
 	"github.com/unknown321/fuse/handlers"
 	"github.com/unknown321/fuse/sessionmanager"
 )
@@ -17,14 +18,14 @@ import (
 const DsnURIDefault = "./fuse.dat"
 
 func Start(baseURL string, listenAddr string, platform string, writeLog bool, passThrough bool, dsnURI string, bonus sessionmanager.SignupBonus) {
-	appstate := gui.AppState{
+	appstate := guistructs.AppState{
 		MessageChannel: make(chan int),
 	}
 	go StartServer(baseURL, listenAddr, platform, writeLog, passThrough, dsnURI, bonus, &appstate)
 	gui.InitGui(&appstate)
 }
 
-func StartServer(baseURL string, listenAddr string, platform string, writeLog bool, passThrough bool, dsnURI string, bonus sessionmanager.SignupBonus, appstate *gui.AppState) {
+func StartServer(baseURL string, listenAddr string, platform string, writeLog bool, passThrough bool, dsnURI string, bonus sessionmanager.SignupBonus, appstate *guistructs.AppState) {
 	now := time.Now().Unix()
 	if writeLog {
 		err := os.MkdirAll("./log/"+strconv.Itoa(int(now)), 0755)

@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"log/slog"
 	"os"
+
+	guistructs "github.com/unknown321/fuse/gui_structs"
 )
 
 func saveConfig() {
@@ -22,8 +24,8 @@ func loadConfig() {
 	if err != nil {
 		slog.Error("error reading config file", err)
 	}
-	var ruleArray []Rule
-	err = json.Unmarshal(ruleArrayJson, ruleArray)
+	var ruleArray []guistructs.Rule
+	err = json.Unmarshal(ruleArrayJson, &ruleArray)
 	if err != nil {
 		slog.Error("error while unmarshalling rules", err)
 	}

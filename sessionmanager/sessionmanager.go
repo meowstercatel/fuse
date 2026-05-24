@@ -28,7 +28,7 @@ import (
 	"github.com/unknown321/fuse/fobrecord"
 	"github.com/unknown321/fuse/fobstatus"
 	"github.com/unknown321/fuse/fobweaponplacement"
-	"github.com/unknown321/fuse/gui"
+	guistructs "github.com/unknown321/fuse/gui_structs"
 	"github.com/unknown321/fuse/informationmessage"
 	"github.com/unknown321/fuse/intruder"
 	"github.com/unknown321/fuse/localbase"
@@ -79,7 +79,7 @@ type SessionManager struct {
 	WriteLog    bool
 	ManagerOpts ManagerOpts
 
-	Appstate *gui.AppState
+	Appstate *guistructs.AppState
 
 	UserRepo                      *user.Repo
 	SessionRepo                   *session.Repo

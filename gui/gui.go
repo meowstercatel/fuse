@@ -1,38 +1,27 @@
 package gui
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
+	"log/slog"
+	"net/url"
 	"sort"
 
 	"github.com/AllenDang/giu"
 	g "github.com/AllenDang/giu"
+	"github.com/unknown321/fuse/coder"
+	guistructs "github.com/unknown321/fuse/gui_structs"
+	"github.com/unknown321/fuse/handlers"
 	"github.com/unknown321/fuse/message"
 )
 
-type AppState struct {
-	MessageLog     []message.Message
-	Rules          []Rule
-	MessageChannel chan int
-}
-
-type privateState struct {
-	MessageStrings   []string
-	ruleTableWidgets []*g.TableRowWidget
-}
-
-type Rule struct {
-	Enabled   bool   `json:"enabled"`
-	Block     bool   `json:"block"`
-	Name      string `json:"name"`
-	Request   bool   `json:"request"`
-	Cmd       string `json:"cmd"`
-	JsonPatch string `json:"jsonPatch"`
-}
-
-var privatestate privateState
-var appstate *AppState
+var privatestate guistructs.PrivateState
+var appstate *guistructs.AppState
 var openRuleWindow bool = false
+var session_key string
+var coderClass *coder.Coder
 
 func prettyPrint(msg message.Message) (string, error) {
 	// Outer struct as map so we can replace Data with parsed JSON
@@ -47,7 +36,11 @@ func prettyPrint(msg message.Message) (string, error) {
 	// Try to parse Data as nested JSON
 	var nested any
 	if err := json.Unmarshal([]byte(msg.Data), &nested); err == nil {
-		outer["data"] = nested
+		if showRawMessage {
+			outer["data"] = nested
+		} else {
+			outer = nested.(map[string]any)
+		}
 	}
 
 	b, err := json.MarshalIndent(outer, "", "  ")
@@ -58,10 +51,15 @@ func prettyPrint(msg message.Message) (string, error) {
 	return string(b), nil
 }
 
-func handleMessages(appstate *AppState, privatestate *privateState) {
+func handleMessages(appstate *guistructs.AppState, privatestate *guistructs.PrivateState) {
 	for {
 		msgType := <-appstate.MessageChannel
 		latestMessage := appstate.MessageLog[len(appstate.MessageLog)-1]
+
+		if latestMessage.SessionKey != nil {
+			session_key = *latestMessage.SessionKey
+			coderClass.WithKey([]byte(session_key))
+		}
 
 		if msgType == 0 {
 			privatestate.MessageStrings = append(privatestate.MessageStrings, "req - "+latestMessage.MsgID.String())
@@ -74,14 +72,68 @@ func handleMessages(appstate *AppState, privatestate *privateState) {
 
 var (
 	editor           *g.CodeEditorWidget
+	creatorEditor    *g.CodeEditorWidget
+	responseEditor   *g.CodeEditorWidget
 	ruleEditor       *g.CodeEditorWidget
 	treeListElements []*g.TreeTableRowWidget
 
 	sashPos                = float32(320)
+	showRawMessage         = false
 	currentSelectedContent int
 )
 
-var currentRule Rule
+var currentRule guistructs.Rule
+
+func syncCoderFromSessionKey() error {
+	if coderClass == nil {
+		coderClass = &coder.Coder{}
+	}
+
+	if err := coderClass.WithKey([]byte(session_key)); err != nil {
+		return fmt.Errorf("cannot initialize coder: %w", err)
+	}
+
+	return nil
+}
+
+func parseWireMessage(content string) (WireMessage, error) {
+	var wire WireMessage
+	if err := json.Unmarshal([]byte(content), &wire); err != nil {
+		return WireMessage{}, fmt.Errorf("unmarshal wire message: %w", err)
+	}
+
+	return wire, nil
+}
+
+func buildRequestMessage(wire WireMessage) (message.Message, error) {
+	requestMessage := message.Message{
+		Compress:      wire.Compress,
+		OriginalSize:  wire.OriginalSize,
+		SessionCrypto: wire.SessionCrypto,
+		SessionKey:    &session_key,
+		MData:         wire.Data,
+	}
+
+	requestMessage.WithCoder(coderClass)
+
+	if requestMessage.Compress {
+		if err := requestMessage.DoCompress(); err != nil {
+			return message.Message{}, fmt.Errorf("compress request: %w", err)
+		}
+	}
+
+	return requestMessage, nil
+}
+
+func decodeResponseMessage(responseBody []byte) (message.Message, error) {
+	responseMessage := message.Message{}
+	responseMessage.WithCoder(coderClass)
+	if err := responseMessage.Decode(responseBody); err != nil {
+		return message.Message{}, fmt.Errorf("decode response: %w", err)
+	}
+
+	return responseMessage, nil
+}
 
 func saveRule() {
 	openRuleWindow = false
@@ -99,7 +151,7 @@ func saveRule() {
 	if shouldCreate {
 		appstate.Rules = append(appstate.Rules, currentRule)
 	}
-	currentRule = Rule{}
+	currentRule = guistructs.Rule{}
 
 	saveConfig()
 	rebuildRuleTable()
@@ -107,7 +159,7 @@ func saveRule() {
 
 func rebuildRuleTable() {
 	// lastRule := privatestate.Rules[len(privatestate.Rules)-1]
-	privatestate.ruleTableWidgets = privatestate.ruleTableWidgets[0:0] //clear array
+	privatestate.RuleTableWidgets = privatestate.RuleTableWidgets[0:0] //clear array
 
 	for _, rule := range appstate.Rules {
 		var ruleType string
@@ -117,7 +169,7 @@ func rebuildRuleTable() {
 			ruleType = "res"
 		}
 
-		privatestate.ruleTableWidgets = append(privatestate.ruleTableWidgets,
+		privatestate.RuleTableWidgets = append(privatestate.RuleTableWidgets,
 			g.TableRow(g.Label(rule.Name), g.Label(rule.Cmd), g.Checkbox("enabled", &rule.Enabled), g.Label(ruleType), g.Button("modify").OnClick(func() {
 				openUpdateRuleWindow(rule.Name)
 			})),
@@ -141,7 +193,7 @@ func openRuleWindowFromContent() {
 	message := appstate.MessageLog[currentSelectedContent]
 	prettyPrintData, _ := prettyPrint(message)
 
-	rule := Rule{
+	rule := guistructs.Rule{
 		Enabled: true,
 		Block:   false,
 		Name:    message.MsgID.String(),
@@ -154,39 +206,41 @@ func openRuleWindowFromContent() {
 	openRuleWindow = true
 }
 
-func InitGui(Appstate *AppState) {
+func InitGui(Appstate *guistructs.AppState) {
+	coderClass = &coder.Coder{}
 	appstate = Appstate
-	privatestate = privateState{}
+	privatestate = guistructs.PrivateState{}
 	loadConfig()
 	go handleMessages(appstate, &privatestate)
 
 	w := g.NewMasterWindow("Overview", 1000, 800, 0)
-	g.Context.FontAtlas.SetDefaultFont("Calibri", 16)
+	g.Context.FontAtlas.SetDefaultFont("Consola.ttf", 14)
 
 	editor = g.CodeEditor().ShowWhitespaces(true).LanguageDefinition(g.LanguageDefinitionJSON).Border(true)
 	ruleEditor = g.CodeEditor().ShowWhitespaces(true).LanguageDefinition(g.LanguageDefinitionJSON).Border(true)
+	creatorEditor = g.CodeEditor().ShowWhitespaces(true).LanguageDefinition(g.LanguageDefinitionJSON).Border(true)
+	responseEditor = g.CodeEditor().ShowWhitespaces(true).LanguageDefinition(g.LanguageDefinitionJSON).Border(true)
 
-	asdRule := Rule{
-		Enabled: true,
-		Block:   false,
-		Name:    "CMD_GET_INFORMATIONLIST2",
-		Cmd:     "CMD_GET_INFORMATIONLIST2",
-		Request: false,
-		JsonPatch: `{
-    "info_list": [
-      {
-        "date": 1779116400,
-        "important": "TRUE",
-        "info_id": 13000,
-        "mes_body": "\u003cI=C=cmn-col-special|** rules are working!! **\u003e\n\nyup\u003e",
-        "mes_subject": ""
-      }
-    ]
-  }`,
-	}
-	appstate.Rules = append(appstate.Rules, asdRule)
-
-	giu.Update()
+	// asdRule := Rule{
+	// 	Enabled: true,
+	// 	Block:   false,
+	// 	Name:    "CMD_GET_INFORMATIONLIST2",
+	// 	Cmd:     "CMD_GET_INFORMATIONLIST2",
+	// 	Request: false,
+	// 	JsonPatch: `{
+	//   "info_list": [
+	//     {
+	//       "date": 1779116400,
+	//       "important": "TRUE",
+	//       "info_id": 13000,
+	//       "mes_body": "\u003cI=C=cmn-col-special|** rules are working!! **\u003e\n\nyup\u003e",
+	//       "mes_subject": ""
+	//     }
+	//   ]
+	// }`,
+	// }
+	// appstate.Rules = append(appstate.Rules, asdRule)
+	rebuildRuleTable() //show config rule entries
 
 	w.Run(loop)
 }
@@ -244,14 +298,90 @@ func buildRowFor(key string, val any) *g.TreeTableRowWidget {
 	case bool:
 		return g.TreeTableRow(key, g.Label(fmt.Sprintf("%t", t)))
 	case nil:
-		return g.TreeTableRow(key, g.Label("null"))
+		return g.TreeTableRow(key, g.Selectable("null"))
 	default:
 		return g.TreeTableRow(key, g.Label(fmt.Sprintf("%v", t)))
 	}
 }
 
+type WireMessage struct {
+	Compress      bool            `json:"compress"`
+	Data          json.RawMessage `json:"data"`
+	OriginalSize  int             `json:"original_size"`
+	SessionCrypto bool            `json:"session_crypto"`
+}
+
+func sendKojiPro() {
+	messageContent := creatorEditor.GetText()
+
+	if err := syncCoderFromSessionKey(); err != nil {
+		slog.Error("prepare coder", "err", err)
+		return
+	}
+
+	wire, err := parseWireMessage(messageContent)
+	if err != nil {
+		slog.Error("unmarshal wire message", "err", err)
+		return
+	}
+
+	requestMessage, err := buildRequestMessage(wire)
+	if err != nil {
+		slog.Error("build request message", "err", err)
+		return
+	}
+	fmt.Println(requestMessage)
+	encoded, err := requestMessage.Encode()
+	if err != nil {
+		slog.Error("encode request", "err", err)
+		return
+	}
+	vals := url.Values{}
+	vals.Set("httpMsg", string(encoded))
+	toSend := vals.Encode()
+	slog.Info(toSend)
+
+	resp, err := handlers.ToKojiPro("/tppstm/main", bytes.NewReader([]byte(toSend)), int64(len(toSend)))
+	if err != nil {
+		slog.Error("err sendKojiPro", "err", err)
+		return
+	}
+	defer resp.Body.Close()
+	slog.Info("kojiPro response status", "status", resp.StatusCode, "contentLength", resp.ContentLength)
+
+	responseBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		slog.Error("read kojiPro response", "err", err)
+		return
+	}
+
+	slog.Info("kojiPro response body", "len", len(responseBody), "body", string(responseBody))
+	if len(responseBody) < 8 {
+		slog.Error("short kojiPro response", "len", len(responseBody), "body", string(responseBody))
+		return
+	}
+
+	responseMessage, err := decodeResponseMessage(responseBody)
+	if err != nil {
+		slog.Error("decode kojiPro response", "err", err)
+		return
+	}
+	fmt.Println(responseMessage)
+
+	responseMessageJson, err := json.Marshal(responseMessage)
+	if err != nil {
+		slog.Error("marshal response message", "err", err)
+		return
+	}
+
+	responseEditor.Text(string(responseMessageJson))
+}
+
 func loop() {
 	g.SingleWindowWithMenuBar().Layout(
+		g.MenuBar().Layout(g.Menu("settings").Layout(
+			g.Checkbox("show raw messages (not just data)", &showRawMessage),
+		)),
 		g.TabBar().TabItems(
 			g.TabItem("ListBox").Layout(
 				giu.SplitLayout(giu.DirectionVertical, &sashPos,
@@ -296,8 +426,41 @@ func loop() {
 							g.TableColumn("req/res"),
 							g.TableColumn("modify"),
 						).
-						Rows(privatestate.ruleTableWidgets...),
+						Rows(privatestate.RuleTableWidgets...),
 				)),
+			g.TabItem("Creator").Layout(
+				giu.SplitLayout(giu.DirectionVertical, &sashPos,
+					g.Column(
+						g.Row(g.Button("+"), g.Button("-")),
+						g.ListBox(privatestate.MessageStrings).OnChange(func(selectedIndex int) {
+							//request list like in postman/insomnia
+							fmt.Printf("selected index: %d\n", selectedIndex)
+						})),
+					g.Column(
+						g.Row(
+							g.Button("send").OnClick(sendKojiPro),
+						),
+						g.TabBar().TabItems(
+							g.TabItem("editor").Layout(
+								creatorEditor,
+							),
+							g.TabItem("response").Layout(
+								g.TabBar().TabItems(
+									g.TabItem("JSON").Layout(
+										responseEditor,
+									),
+									g.TabItem("Tree").Layout(
+										g.TreeTable().
+											Columns(g.TableColumn("Name"), g.TableColumn("Value")).
+											Rows(treeListElements...).
+											Size(g.Auto, g.Auto),
+									),
+								),
+							),
+						),
+					),
+				),
+			),
 		),
 	)
 
@@ -306,9 +469,9 @@ func loop() {
 			g.Column(
 				g.Row(
 					g.Button("save").OnClick(saveRule),
-					g.Button("abandon").OnClick(func() {
+					g.Button("close").OnClick(func() {
 						openRuleWindow = false
-						currentRule = Rule{}
+						currentRule = guistructs.Rule{}
 					}),
 				),
 				g.Row(g.Label("rule name (unique): "), g.InputText(&currentRule.Name)),

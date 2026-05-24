@@ -11,6 +11,8 @@ import (
 
 var kojiProUrl = "https://mgstpp-game.konamionline.com/"
 
+const browserUserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36"
+
 func ToKojiPro(URL string, body io.Reader, length int64) (*http.Response, error) {
 	c := http.Client{Timeout: time.Second * 10, Transport: &http.Transport{
 		DisableCompression: true,
@@ -27,11 +29,19 @@ func ToKojiPro(URL string, body io.Reader, length int64) (*http.Response, error)
 	}
 
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Accept", "*/*")
+	req.Header.Set("Accept-Language", "en-US,en;q=0.9")
+	req.Header.Set("Accept-Encoding", "gzip, deflate, br, zstd")
 	req.Header.Set("Connection", "Keep-Alive")
 
-	req.Header.Set("User-Agent", "")
+	req.Header.Set("User-Agent", browserUserAgent)
+	req.Header.Set("Sec-CH-UA", `"Chromium";v="148", "Google Chrome";v="148", "Not/A)Brand";v="99"`)
+	req.Header.Set("Sec-CH-UA-Mobile", "?0")
+	req.Header.Set("Sec-CH-UA-Platform", `"Windows"`)
+	req.Header.Set("Sec-Fetch-Dest", "empty")
+	req.Header.Set("Sec-Fetch-Mode", "cors")
+	req.Header.Set("Sec-Fetch-Site", "cross-site")
 	req.Header.Del("Transfer-Encoding")
-	req.Header.Del("Accept-Encoding")
 
 	req.ContentLength = length
 
