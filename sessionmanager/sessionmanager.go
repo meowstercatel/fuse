@@ -6,6 +6,7 @@ import (
 	"compress/zlib"
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
@@ -58,6 +59,8 @@ import (
 	"github.com/unknown321/fuse/tppmessage"
 	"github.com/unknown321/fuse/user"
 	"github.com/unknown321/fuse/util"
+
+	jsonpatch "github.com/evanphx/json-patch"
 )
 
 var override = true
@@ -672,6 +675,33 @@ func (m *SessionManager) Handle(ctx context.Context, message *message.Message) e
 	if m.WriteLog {
 		if err = message.ToFile(fmt.Sprintf("log/%s", m.LogDir)); err != nil {
 			slog.Warn("cannot save message to file", "error", err.Error())
+		}
+	}
+
+	slog.Info("msg: ", message.MsgID.String())
+	for _, rule := range m.Appstate.Rules {
+		if message.IsRequest == rule.Request &&
+			message.MsgID.String() == rule.Cmd && rule.Enabled {
+			slog.Info("RULE BEFORE: ", string(message.MData))
+			//apply rule patch
+			// var messageDataInterface interface{}
+			// json.Unmarshal(message.MData, &messageDataInterface)
+			// var rulePatch interface{}
+			// json.Unmarshal([]byte(rule.JsonPatch), &rulePatch)
+
+			withCombinedPatch, err := jsonpatch.MergePatch(message.MData, []byte(rule.JsonPatch))
+			if err != nil {
+				slog.Error("rule merge failed", "cmd", rule.Cmd, "err", err, "patch", rule.JsonPatch)
+				continue
+			}
+			if !json.Valid(withCombinedPatch) {
+				slog.Error("patched data invalid JSON", "cmd", rule.Cmd)
+				continue
+			}
+			message.MData = withCombinedPatch
+			message.Data = string(withCombinedPatch)
+			slog.Info("RULE AFTER:", message.MsgID.String(), string(message.MData))
+
 		}
 	}
 

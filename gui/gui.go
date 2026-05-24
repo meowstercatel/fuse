@@ -3,8 +3,7 @@ package gui
 import (
 	"encoding/json"
 	"fmt"
-	"image/color"
-	"time"
+	"sort"
 
 	"github.com/AllenDang/giu"
 	g "github.com/AllenDang/giu"
@@ -13,22 +12,22 @@ import (
 
 type AppState struct {
 	MessageLog     []message.Message
+	Rules          []Rule
 	MessageChannel chan int
 }
 
 type privateState struct {
 	MessageStrings   []string
-	rules            []Rule
 	ruleTableWidgets []*g.TableRowWidget
 }
 
 type Rule struct {
-	Enabled   bool
-	Block     bool
-	Name      string
-	Request   bool
-	Cmd       string
-	JsonPatch string
+	Enabled   bool   `json:"enabled"`
+	Block     bool   `json:"block"`
+	Name      string `json:"name"`
+	Request   bool   `json:"request"`
+	Cmd       string `json:"cmd"`
+	JsonPatch string `json:"jsonPatch"`
 }
 
 var privatestate privateState
@@ -74,21 +73,12 @@ func handleMessages(appstate *AppState, privatestate *privateState) {
 }
 
 var (
-	editor     *g.CodeEditorWidget
-	ruleEditor *g.CodeEditorWidget
+	editor           *g.CodeEditorWidget
+	ruleEditor       *g.CodeEditorWidget
+	treeListElements []*g.TreeTableRowWidget
 
-	name                   string
-	items                  []string
-	itemSelected           int32
-	checked                bool
-	checked2               bool
-	dragInt                int32
-	multiline              string
-	radioOp                int
-	autoCompleteCandidates = []string{"hello", "hello world"}
-	date                   = time.Now()
-	col                    = &color.RGBA{}
 	sashPos                = float32(320)
+	currentSelectedContent int
 )
 
 var currentRule Rule
@@ -99,26 +89,27 @@ func saveRule() {
 	shouldCreate := true
 	currentRule.JsonPatch = ruleEditor.GetText()
 	ruleEditor.Text("")
-	for i, rule := range privatestate.rules {
+	for i, rule := range appstate.Rules {
 		if currentRule.Name == rule.Name {
 			//update
-			privatestate.rules[i] = currentRule
+			appstate.Rules[i] = currentRule
 			shouldCreate = false
 		}
 	}
 	if shouldCreate {
-		privatestate.rules = append(privatestate.rules, currentRule)
+		appstate.Rules = append(appstate.Rules, currentRule)
 	}
 	currentRule = Rule{}
 
+	saveConfig()
 	rebuildRuleTable()
 }
 
 func rebuildRuleTable() {
-	// lastRule := privatestate.rules[len(privatestate.rules)-1]
+	// lastRule := privatestate.Rules[len(privatestate.Rules)-1]
 	privatestate.ruleTableWidgets = privatestate.ruleTableWidgets[0:0] //clear array
 
-	for _, rule := range privatestate.rules {
+	for _, rule := range appstate.Rules {
 		var ruleType string
 		if rule.Request {
 			ruleType = "req"
@@ -137,7 +128,7 @@ func rebuildRuleTable() {
 }
 
 func openUpdateRuleWindow(ruleName string) {
-	for _, rule := range privatestate.rules {
+	for _, rule := range appstate.Rules {
 		if rule.Name == ruleName {
 			currentRule = rule
 		}
@@ -146,9 +137,27 @@ func openUpdateRuleWindow(ruleName string) {
 	openRuleWindow = true
 }
 
+func openRuleWindowFromContent() {
+	message := appstate.MessageLog[currentSelectedContent]
+	prettyPrintData, _ := prettyPrint(message)
+
+	rule := Rule{
+		Enabled: true,
+		Block:   false,
+		Name:    message.MsgID.String(),
+		Request: message.IsRequest,
+		Cmd:     message.MsgID.String(),
+	}
+	ruleEditor.Text(prettyPrintData)
+
+	currentRule = rule
+	openRuleWindow = true
+}
+
 func InitGui(Appstate *AppState) {
 	appstate = Appstate
 	privatestate = privateState{}
+	loadConfig()
 	go handleMessages(appstate, &privatestate)
 
 	w := g.NewMasterWindow("Overview", 1000, 800, 0)
@@ -157,7 +166,88 @@ func InitGui(Appstate *AppState) {
 	editor = g.CodeEditor().ShowWhitespaces(true).LanguageDefinition(g.LanguageDefinitionJSON).Border(true)
 	ruleEditor = g.CodeEditor().ShowWhitespaces(true).LanguageDefinition(g.LanguageDefinitionJSON).Border(true)
 
+	asdRule := Rule{
+		Enabled: true,
+		Block:   false,
+		Name:    "CMD_GET_INFORMATIONLIST2",
+		Cmd:     "CMD_GET_INFORMATIONLIST2",
+		Request: false,
+		JsonPatch: `{
+    "info_list": [
+      {
+        "date": 1779116400,
+        "important": "TRUE",
+        "info_id": 13000,
+        "mes_body": "\u003cI=C=cmn-col-special|** rules are working!! **\u003e\n\nyup\u003e",
+        "mes_subject": ""
+      }
+    ]
+  }`,
+	}
+	appstate.Rules = append(appstate.Rules, asdRule)
+
+	giu.Update()
+
 	w.Run(loop)
+}
+
+func traverseJson(messageData string) {
+	treeListElements = treeListElements[0:0]
+
+	var data any
+	if err := json.Unmarshal([]byte(messageData), &data); err != nil {
+		treeListElements = append(treeListElements, g.TreeTableRow("invalid JSON", g.Label(err.Error())))
+		return
+	}
+
+	switch v := data.(type) {
+	case map[string]any:
+		// stable ordering
+		keys := make([]string, 0, len(v))
+		for k := range v {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		for _, k := range keys {
+			treeListElements = append(treeListElements, buildRowFor(k, v[k]))
+		}
+	default:
+		treeListElements = append(treeListElements, buildRowFor("value", v))
+	}
+
+}
+
+// buildRowFor converts a key/value into a TreeTableRowWidget (recursively)
+func buildRowFor(key string, val any) *g.TreeTableRowWidget {
+	switch t := val.(type) {
+	case map[string]any:
+		keys := make([]string, 0, len(t))
+		for k := range t {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		children := make([]*g.TreeTableRowWidget, 0, len(keys))
+		for _, k := range keys {
+			children = append(children, buildRowFor(k, t[k]))
+		}
+		return g.TreeTableRow(key, g.Label("")).Children(children...)
+	case []any:
+		children := make([]*g.TreeTableRowWidget, 0, len(t))
+		for i, item := range t {
+			children = append(children, buildRowFor(fmt.Sprintf("[%d]", i), item))
+		}
+		return g.TreeTableRow(key, g.Label(fmt.Sprintf("len=%d", len(t)))).Children(children...)
+	case string:
+		return g.TreeTableRow(key, g.Label(t))
+	case float64:
+		return g.TreeTableRow(key, g.Label(fmt.Sprintf("%v", t)))
+	case bool:
+		return g.TreeTableRow(key, g.Label(fmt.Sprintf("%t", t)))
+	case nil:
+		return g.TreeTableRow(key, g.Label("null"))
+	default:
+		return g.TreeTableRow(key, g.Label(fmt.Sprintf("%v", t)))
+	}
 }
 
 func loop() {
@@ -167,12 +257,31 @@ func loop() {
 				giu.SplitLayout(giu.DirectionVertical, &sashPos,
 					g.ListBox(privatestate.MessageStrings).OnChange(func(selectedIndex int) {
 						fmt.Printf("selected index: %d\n", selectedIndex)
-						fmt.Println("val:", appstate.MessageLog[selectedIndex])
+						// fmt.Println("val:", appstate.MessageLog[selectedIndex])
+						currentSelectedContent = selectedIndex
 
 						content, _ := prettyPrint(appstate.MessageLog[selectedIndex])
-						editor.Text(string(content))
+						editor.Text(content)
+
+						traverseJson(content)
+						giu.Update()
 					}),
-					editor,
+					g.Column(
+						g.Row(
+							g.Button("create rule from CMD").OnClick(openRuleWindowFromContent),
+						),
+						g.TabBar().TabItems(
+							g.TabItem("JSON").Layout(
+								editor,
+							),
+							g.TabItem("Tree").Layout(
+								g.TreeTable().
+									Columns(g.TableColumn("Name"), g.TableColumn("Value")).
+									Rows(treeListElements...).
+									Size(g.Auto, g.Auto),
+							),
+						),
+					),
 				)),
 			g.TabItem("Rules").Layout(
 				g.Column(
@@ -209,7 +318,7 @@ func loop() {
 					g.RadioButton("request", currentRule.Request).OnChange(func() { currentRule.Request = !currentRule.Request }),
 					g.RadioButton("response", !currentRule.Request).OnChange(func() { currentRule.Request = !currentRule.Request }),
 				),
-				g.Checkbox("block CMD", &currentRule.Block),
+				// g.Checkbox("block CMD", &currentRule.Block),
 				g.Label("patch:"),
 				ruleEditor,
 			),
