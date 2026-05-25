@@ -15,19 +15,29 @@ type Rule struct {
 }
 
 type Request struct {
-	Name string
-	Cmd  string
-	Body string
+	Name string `json:"name"`
+	// Cmd           string
+	Body          string `json:"body"`
+	SessionCrypto bool   `json:"sessionCrypto"`
+	Compress      bool   `json:"compress"`
+}
+
+type Tokens struct {
+	SteamID string `json:"userID"` //steamID (user_name in requests)
+	Hash    string `json:"hash"`
 }
 
 type AppState struct {
-	MessageLog     []message.Message
-	Rules          []Rule
-	Requests       []Request
-	MessageChannel chan int
+	MessageLog     []message.Message `json:"-"`
+	Rules          []Rule            `json:"rules"`
+	Requests       []Request         `json:"requests"`
+	Tokens         Tokens            `json:"tokens"`
+	MessageChannel chan int          `json:"-"`
 }
 
 type PrivateState struct {
 	MessageStrings   []string
 	RuleTableWidgets []*g.TableRowWidget
+
+	RequestStrings []string
 }

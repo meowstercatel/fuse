@@ -708,9 +708,20 @@ func (m *SessionManager) Handle(ctx context.Context, message *message.Message) e
 	message.Data = string(message.MData)
 	m.Appstate.MessageLog = append(m.Appstate.MessageLog, *message)
 	if message.IsRequest {
-		m.Appstate.MessageChannel <- 0
+		select {
+		case m.Appstate.MessageChannel <- 0:
+		}
 	} else {
-		m.Appstate.MessageChannel <- 1
+		select {
+		case m.Appstate.MessageChannel <- 1:
+		}
+	}
+
+	if message.MsgID == tppmessage.CMD_REQAUTH_HTTPS && message.IsRequest {
+		authResponse := tppmessage.CMDReqAuthHTTPSRequest{}
+		json.Unmarshal(message.MData, &authResponse)
+		m.Appstate.Tokens.Hash = authResponse.Hash
+		m.Appstate.Tokens.SteamID = authResponse.UserName
 	}
 
 	slog.Info("handling message", "type", message.MsgID, "override", override, "request", message.IsRequest)

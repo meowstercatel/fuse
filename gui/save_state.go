@@ -9,25 +9,29 @@ import (
 )
 
 func saveConfig() {
-	ruleArrayJson, err := json.Marshal(appstate.Rules)
+	AppStateJson, err := json.Marshal(appstate)
 	if err != nil {
-		slog.Error("error while marshalling rules", err)
+		slog.Error("error while marshalling appstate", err)
 	}
-	err = os.WriteFile("config.json", ruleArrayJson, 0644)
+	err = os.WriteFile("config.json", AppStateJson, 0644)
 	if err != nil {
 		slog.Error("error while writing config", err)
 	}
 }
 
 func loadConfig() {
-	ruleArrayJson, err := os.ReadFile("config.json")
+	AppState, err := os.ReadFile("config.json")
 	if err != nil {
 		slog.Error("error reading config file", err)
 	}
-	var ruleArray []guistructs.Rule
-	err = json.Unmarshal(ruleArrayJson, &ruleArray)
+	var AppStateConfig guistructs.AppState
+	err = json.Unmarshal(AppState, &AppStateConfig)
 	if err != nil {
-		slog.Error("error while unmarshalling rules", err)
+		slog.Error("error while unmarshalling appstate", err)
 	}
-	appstate.Rules = ruleArray
+	if appstate != nil {
+		AppStateConfig.MessageChannel = appstate.MessageChannel
+		*appstate = AppStateConfig
+		appstate.MessageChannel = AppStateConfig.MessageChannel
+	}
 }

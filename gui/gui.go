@@ -2,6 +2,9 @@ package gui
 
 import (
 	"bytes"
+	"compress/flate"
+	"compress/zlib"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -15,6 +18,7 @@ import (
 	guistructs "github.com/unknown321/fuse/gui_structs"
 	"github.com/unknown321/fuse/handlers"
 	"github.com/unknown321/fuse/message"
+	"github.com/unknown321/fuse/util"
 )
 
 var privatestate guistructs.PrivateState
@@ -54,12 +58,17 @@ func prettyPrint(msg message.Message) (string, error) {
 func handleMessages(appstate *guistructs.AppState, privatestate *guistructs.PrivateState) {
 	for {
 		msgType := <-appstate.MessageChannel
+		if len(appstate.MessageLog) == 0 {
+			slog.Warn("message channel received but message log is empty")
+			continue
+		}
 		latestMessage := appstate.MessageLog[len(appstate.MessageLog)-1]
 
 		if latestMessage.SessionKey != nil {
 			session_key = *latestMessage.SessionKey
 			coderClass.WithKey([]byte(session_key))
 		}
+		slog.Info("7")
 
 		if msgType == 0 {
 			privatestate.MessageStrings = append(privatestate.MessageStrings, "req - "+latestMessage.MsgID.String())
@@ -67,6 +76,7 @@ func handleMessages(appstate *guistructs.AppState, privatestate *guistructs.Priv
 			privatestate.MessageStrings = append(privatestate.MessageStrings, "res - "+latestMessage.MsgID.String())
 		}
 		giu.Update()
+		slog.Info("8")
 	}
 }
 
@@ -77,50 +87,86 @@ var (
 	ruleEditor       *g.CodeEditorWidget
 	treeListElements []*g.TreeTableRowWidget
 
-	sashPos                = float32(320)
-	showRawMessage         = false
+	sashPos        = float32(320)
+	editorSize     = float32(320)
+	showRawMessage = false
+
+	creatorCompress        = false
+	creatorSessionCrypto   = true
 	currentSelectedContent int
+	currentRequestName     string
+	currentRequestID       int
 )
 
 var currentRule guistructs.Rule
 
-func syncCoderFromSessionKey() error {
+func syncOuterCoder() error {
 	if coderClass == nil {
 		coderClass = &coder.Coder{}
 	}
 
-	if err := coderClass.WithKey([]byte(session_key)); err != nil {
-		return fmt.Errorf("cannot initialize coder: %w", err)
+	if err := coderClass.WithKey(nil); err != nil {
+		return fmt.Errorf("cannot initialize outer coder: %w", err)
 	}
 
 	return nil
 }
 
-func parseWireMessage(content string) (WireMessage, error) {
-	var wire WireMessage
-	if err := json.Unmarshal([]byte(content), &wire); err != nil {
-		return WireMessage{}, fmt.Errorf("unmarshal wire message: %w", err)
+func buildRequestMessage(content string) (message.Message, error) {
+	var probe message.Message
+	probe.MData = []byte(content)
+	if err := probe.GetDataType(); err != nil {
+		return message.Message{}, fmt.Errorf("cannot determine msgid from inner payload: %w", err)
 	}
 
-	return wire, nil
-}
-
-func buildRequestMessage(wire WireMessage) (message.Message, error) {
 	requestMessage := message.Message{
-		Compress:      wire.Compress,
-		OriginalSize:  wire.OriginalSize,
-		SessionCrypto: wire.SessionCrypto,
+		Compress:      creatorCompress,
+		SessionCrypto: creatorSessionCrypto,
 		SessionKey:    &session_key,
-		MData:         wire.Data,
+		MsgID:         probe.MsgID,
+		IsRequest:     true,
+		MData:         []byte(content),
 	}
 
-	requestMessage.WithCoder(coderClass)
+	requestMessage.OriginalSize = len(requestMessage.MData)
 
+	innerPayload := requestMessage.MData
 	if requestMessage.Compress {
-		if err := requestMessage.DoCompress(); err != nil {
-			return message.Message{}, fmt.Errorf("compress request: %w", err)
+		var compressed bytes.Buffer
+		writer, err := zlib.NewWriterLevel(&compressed, flate.BestCompression)
+		if err != nil {
+			return message.Message{}, fmt.Errorf("cannot create zlib writer: %w", err)
 		}
+		if _, err := writer.Write(innerPayload); err != nil {
+			_ = writer.Close()
+			return message.Message{}, fmt.Errorf("cannot compress inner payload: %w", err)
+		}
+		if err := writer.Close(); err != nil {
+			return message.Message{}, fmt.Errorf("cannot finish compression: %w", err)
+		}
+		innerPayload = compressed.Bytes()
 	}
+
+	if requestMessage.SessionCrypto {
+		if session_key == "" {
+			return message.Message{}, fmt.Errorf("session crypto is enabled but session key is empty")
+		}
+		sessionCoder := coder.Coder{}
+		if err := sessionCoder.WithKey([]byte(session_key)); err != nil {
+			return message.Message{}, fmt.Errorf("cannot initialize session coder: %w", err)
+		}
+		innerPayload = sessionCoder.EncodeBlowfish(innerPayload)
+	}
+
+	if requestMessage.Compress || requestMessage.SessionCrypto {
+		encoded := base64.StdEncoding.EncodeToString(innerPayload)
+		lines := util.SplitByteString([]byte(encoded), 76)
+		innerPayload = bytes.Join(lines, []byte("\r\n"))
+		innerPayload = append(innerPayload, []byte("\r\n")...)
+	}
+
+	requestMessage.MData = innerPayload
+	requestMessage.WithCoder(coderClass)
 
 	return requestMessage, nil
 }
@@ -152,6 +198,18 @@ func saveRule() {
 		appstate.Rules = append(appstate.Rules, currentRule)
 	}
 	currentRule = guistructs.Rule{}
+
+	saveConfig()
+	rebuildRuleTable()
+}
+
+func deleteRule() {
+	openRuleWindow = false
+	for i, rule := range appstate.Rules {
+		if currentRule.Name == rule.Name {
+			appstate.Rules = append(appstate.Rules[:i], appstate.Rules[i+1:]...)
+		}
+	}
 
 	saveConfig()
 	rebuildRuleTable()
@@ -218,7 +276,7 @@ func InitGui(Appstate *guistructs.AppState) {
 
 	editor = g.CodeEditor().ShowWhitespaces(true).LanguageDefinition(g.LanguageDefinitionJSON).Border(true)
 	ruleEditor = g.CodeEditor().ShowWhitespaces(true).LanguageDefinition(g.LanguageDefinitionJSON).Border(true)
-	creatorEditor = g.CodeEditor().ShowWhitespaces(true).LanguageDefinition(g.LanguageDefinitionJSON).Border(true)
+	creatorEditor = g.CodeEditor().ShowWhitespaces(true).Border(true)
 	responseEditor = g.CodeEditor().ShowWhitespaces(true).LanguageDefinition(g.LanguageDefinitionJSON).Border(true)
 
 	// asdRule := Rule{
@@ -241,6 +299,7 @@ func InitGui(Appstate *guistructs.AppState) {
 	// }
 	// appstate.Rules = append(appstate.Rules, asdRule)
 	rebuildRuleTable() //show config rule entries
+	updateRequestList()
 
 	w.Run(loop)
 }
@@ -304,28 +363,15 @@ func buildRowFor(key string, val any) *g.TreeTableRowWidget {
 	}
 }
 
-type WireMessage struct {
-	Compress      bool            `json:"compress"`
-	Data          json.RawMessage `json:"data"`
-	OriginalSize  int             `json:"original_size"`
-	SessionCrypto bool            `json:"session_crypto"`
-}
-
 func sendKojiPro() {
 	messageContent := creatorEditor.GetText()
 
-	if err := syncCoderFromSessionKey(); err != nil {
+	if err := syncOuterCoder(); err != nil {
 		slog.Error("prepare coder", "err", err)
 		return
 	}
 
-	wire, err := parseWireMessage(messageContent)
-	if err != nil {
-		slog.Error("unmarshal wire message", "err", err)
-		return
-	}
-
-	requestMessage, err := buildRequestMessage(wire)
+	requestMessage, err := buildRequestMessage(messageContent)
 	if err != nil {
 		slog.Error("build request message", "err", err)
 		return
@@ -368,13 +414,76 @@ func sendKojiPro() {
 	}
 	fmt.Println(responseMessage)
 
-	responseMessageJson, err := json.Marshal(responseMessage)
-	if err != nil {
-		slog.Error("marshal response message", "err", err)
-		return
+	// responseMessageJson, err := json.Marshal(responseMessage)
+	// if err != nil {
+	// 	slog.Error("marshal response message", "err", err)
+	// 	return
+	// }
+
+	prettyJson, _ := prettyPrint(responseMessage)
+
+	responseEditor.Text(prettyJson)
+}
+
+func createRequest() {
+	request := guistructs.Request{
+		Name:          "request",
+		Body:          "",
+		SessionCrypto: false,
+		Compress:      false,
+	}
+	appstate.Requests = append(appstate.Requests, request)
+
+	saveConfig()
+
+	openRequest(len(appstate.Requests) - 1)
+	updateRequestList()
+}
+
+func saveRequest() {
+	appstate.Requests[currentRequestID] = guistructs.Request{
+		Name:          currentRequestName,
+		Body:          creatorEditor.GetText(),
+		SessionCrypto: creatorSessionCrypto,
+		Compress:      creatorCompress,
 	}
 
-	responseEditor.Text(string(responseMessageJson))
+	saveConfig()
+	updateRequestList()
+	// appstate.Requests = append(appstate.Requests, request)
+}
+
+func openRequest(index int) {
+	slog.Info("opening", index)
+	request := appstate.Requests[index]
+
+	currentRequestName = request.Name
+	creatorEditor.Text(request.Body)
+	creatorCompress = request.Compress
+	creatorSessionCrypto = request.SessionCrypto
+}
+
+func deleteRequest() {
+	appstate.Requests = append(appstate.Requests[:currentRequestID], appstate.Requests[currentRequestID+1:]...)
+	if len(appstate.Requests) == 0 {
+		createRequest()
+	}
+
+	saveConfig()
+	updateRequestList()
+}
+
+func updateRequestList() {
+	privatestate.RequestStrings = privatestate.RequestStrings[0:0] //clear array
+	for _, request := range appstate.Requests {
+		privatestate.RequestStrings = append(privatestate.RequestStrings, request.Name)
+	}
+
+	if len(appstate.Requests) == 1 {
+		openRequest(0)
+	}
+
+	giu.Update()
 }
 
 func loop() {
@@ -383,7 +492,7 @@ func loop() {
 			g.Checkbox("show raw messages (not just data)", &showRawMessage),
 		)),
 		g.TabBar().TabItems(
-			g.TabItem("ListBox").Layout(
+			g.TabItem("Requests").Layout(
 				giu.SplitLayout(giu.DirectionVertical, &sashPos,
 					g.ListBox(privatestate.MessageStrings).OnChange(func(selectedIndex int) {
 						fmt.Printf("selected index: %d\n", selectedIndex)
@@ -431,32 +540,27 @@ func loop() {
 			g.TabItem("Creator").Layout(
 				giu.SplitLayout(giu.DirectionVertical, &sashPos,
 					g.Column(
-						g.Row(g.Button("+"), g.Button("-")),
-						g.ListBox(privatestate.MessageStrings).OnChange(func(selectedIndex int) {
-							//request list like in postman/insomnia
-							fmt.Printf("selected index: %d\n", selectedIndex)
-						})),
+						g.Row(
+							g.Button("+").OnClick(createRequest),
+							g.Button("-").OnClick(deleteRequest),
+							g.Button("import from requests"),
+						),
+						g.ListBox(privatestate.RequestStrings).OnChange(openRequest)),
 					g.Column(
 						g.Row(
-							g.Button("send").OnClick(sendKojiPro),
+							g.Label("name:"),
+							g.InputText(&currentRequestName),
+							g.Button("save").OnClick(saveRequest),
 						),
-						g.TabBar().TabItems(
-							g.TabItem("editor").Layout(
-								creatorEditor,
-							),
-							g.TabItem("response").Layout(
-								g.TabBar().TabItems(
-									g.TabItem("JSON").Layout(
-										responseEditor,
-									),
-									g.TabItem("Tree").Layout(
-										g.TreeTable().
-											Columns(g.TableColumn("Name"), g.TableColumn("Value")).
-											Rows(treeListElements...).
-											Size(g.Auto, g.Auto),
-									),
-								),
-							),
+						g.Row(
+							g.Button("send").OnClick(sendKojiPro),
+							g.Checkbox("compress", &creatorCompress),
+							g.Checkbox("session crypto", &creatorSessionCrypto),
+						),
+
+						giu.SplitLayout(giu.DirectionVertical, &editorSize,
+							g.Column(g.Label("request"), creatorEditor),
+							g.Column(g.Label("response"), responseEditor),
 						),
 					),
 				),
@@ -469,6 +573,7 @@ func loop() {
 			g.Column(
 				g.Row(
 					g.Button("save").OnClick(saveRule),
+					g.Button("delete").OnClick(deleteRule),
 					g.Button("close").OnClick(func() {
 						openRuleWindow = false
 						currentRule = guistructs.Rule{}

@@ -12,6 +12,7 @@ import (
 	"github.com/unknown321/fuse/gui"
 	guistructs "github.com/unknown321/fuse/gui_structs"
 	"github.com/unknown321/fuse/handlers"
+	"github.com/unknown321/fuse/message"
 	"github.com/unknown321/fuse/sessionmanager"
 )
 
@@ -20,6 +21,7 @@ const DsnURIDefault = "./fuse.dat"
 func Start(baseURL string, listenAddr string, platform string, writeLog bool, passThrough bool, dsnURI string, bonus sessionmanager.SignupBonus) {
 	appstate := guistructs.AppState{
 		MessageChannel: make(chan int),
+		MessageLog:     make([]message.Message, 0),
 	}
 	go StartServer(baseURL, listenAddr, platform, writeLog, passThrough, dsnURI, bonus, &appstate)
 	gui.InitGui(&appstate)
